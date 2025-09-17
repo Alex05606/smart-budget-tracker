@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Smart Budget Tracker (MVP)</title>
+
+  <!-- Tailwind CDN for quick styling (production: build Tailwind) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <style>
+    /* small tweaks */
+    body { -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+    .scrollbox { max-height: 10rem; overflow:auto; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen p-6">
+  <div class="max-w-5xl mx-auto">
+    <header class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-bold">Smart Budget Tracker (MVP)</h1>
+      <div class="text-sm text-gray-600">Local-only demo • data in your browser</div>
+    </header>
+
+    <main class="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <!-- Inputs -->
+      <section class="bg-white p-4 rounded-lg shadow">
+        <h2 class="font-semibold mb-3">Add expense (manual)</h2>
+        <div class="space-y-2">
+          <input id="dateInput" type="date" class="w-full p-2 border rounded" />
+          <div class="flex gap-2">
+            <input id="amountInput" placeholder="Amount (₹)" class="flex-1 p-2 border rounded" />
+            <select id="categorySelect" class="p-2 border rounded">
+              <option>Food</option>
+              <option>Travel</option>
+              <option>Shopping</option>
+              <option>Bills</option>
+              <option>Entertainment</option>
+              <option>Other</option>
+            </select>
+          </div>
+          <button id="addBtn" class="w-full bg-blue-600 text-white py-2 rounded">Add</button>
+        </div>
+
+        <hr class="my-4" />
+
+        <h3 class="font-semibold mb-2">Import CSV</h3>
+        <p class="text-xs text-gray-500 mb-2">CSV header: <code>date,amount,category</code></p>
+        <textarea id="csvArea" rows="6" class="w-full p-2 border rounded mb-2" placeholder="date,amount,category\n2025-09-01,250,Food"></textarea>
+        <div class="flex gap-2">
+          <button id="importBtn" class="flex-1 bg-green-600 text-white py-2 rounded">Import</button>
+          <button id="resetBtn" class="flex-1 bg-red-500 text-white py-2 rounded">Reset All</button>
+        </div>
+
+        <hr class="my-4" />
+
+        <div>
+          <label class="block text-sm font-medium mb-1">Monthly budget (₹)</label>
+          <input id="budgetInput" type="number" class="w-full p-2 border rounded" placeholder="e.g., 20000" />
+          <div id="budgetWarn" class="mt-2 text-sm"></div>
+        </div>
+      </section>
+
+      <!-- Charts & overview -->
+      <section class="col-span-2 md:col-span-2 grid grid-rows-2 gap-6">
+        <div class="bg-white p-4 rounded-lg shadow">
+          <div class="flex items-start justify-between">
+            <h2 class="font-semibold">Spending overview</h2>
+            <div class="text-xs text-gray-500">Total spent: <span id="totalSpent">₹0</span></div>
+          </div>
+
+          <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="p-2 border rounded">
+              <h4 class="text-sm mb-2">By category</h4>
+              <canvas id="pieChart" height="200"></canvas>
+              <div id="categoryList" class="text-sm mt-2 text-gray-700"></div>
+            </div>
+
+            <div class="p-2 border rounded">
+              <h4 class="text-sm mb-2">Daily spending</h4>
+              <canvas id="lineChart" height="200"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-lg shadow">
+          <h3 class="font-semibold mb-2">Insights & Tips</h3>
+          <div id="tipText" class="text-sm text-gray-700 mb-3">No spending yet — add expenses to see insights.</div>
+          <hr class="my-3" />
+          <h4 class="font-medium mb-2">Recent entries</h4>
+          <div class="scrollbox text-sm">
+            <table class="w-full text-left text-sm" id="recentTable">
+              <thead>
+                <tr class="text-gray-500">
+                  <th class="py-1">Date</th>
+                  <th class="py-1">Category</th>
+                  <th class="py-1">Amount (₹)</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="mt-6 text-center text-xs text-gray-500">MVP • Local demo — add backend later to persist cloud data or add sharing/leaderboards.</footer>
+  </div>
+
+<script>
+  // ---------- Utility & storage ----------
+  const STORAGE_KEY = 'sbt_entries_v1';
+  const STORAGE_BUDGET = 'sbt_budget_v1';
+
+  function loadEntries() {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    } catch (e) { return []; }
+  }
+  function saveEntries(entries) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  }
+  function loadBudget() {
+    const v = localStorage.getItem(STORAGE_BUDGET);
+    return v ? Number(v) : '';
+  }
+  function saveBudget(b) {
+    if (b === '' || b === null) localStorage.removeItem(STORAGE_BUDGET);
+    else localStorage.setItem(STORAGE_BUDGET, String(b));
+  }
+
+  // initial state
+  let entries = loadEntries();
+  let budget = loadBudget();
+
+  // DOM refs
+  const dateInput = document.getElementById('dateInput');
+  const amountInput = document.getElementById('amountInput');
+  const categorySelect = document.getElementById('categorySelect');
+  const addBtn = document.getElementById('addBtn');
+  const csvArea = document.getElementById('csvArea');
+  const importBtn = document.getElementById('importBtn');
+  const resetBtn = document.getElementById('resetBtn');
+  const budgetInput = document.getElementById('budgetInput');
+  const budgetWarn = document.getElementById('budgetWarn');
+  const totalSpentEl = document.getElementById('totalSpent');
+  const tipText = document.getElementById('tipText');
+  const recentTbody = document.querySelector('#recentTable tbody');
+  const categoryList = document.getElementById('categoryList');
+
+  // Charts
+  const pieCtx = document.getElementById('pieChart').getContext('2d');
+  const lineCtx = document.getElementById('lineChart').getContext('2d');
+  let pieChart = null;
+  let lineChart = null;
+
+  // ---------- CSV parse ----------
+  function parseSimpleCSV(text) {
+    // Expect header line with date,amount,category (order flexible)
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+    const header = lines[0].split(',').map(h=>h.trim().toLowerCase());
+    const rows = lines.slice(1);
+    const data = [];
+    for (const r of rows) {
+      const cols = r.split(',').map(c=>c.trim());
+      const obj = {};
+      header.forEach((h,i)=> obj[h]=cols[i]||'');
+      const date = (obj.date && obj.date.split('T')[0]) || (new Date().toISOString().slice(0,10));
+      const amount = parseFloat(obj.amount || '0') || 0;
+      const category = obj.category || 'Other';
+      data.push({ date, amount, category });
+    }
+    return data;
+  }
+
+  // ---------- Rendering ----------
+  function formatINR(n) {
+    try { return n.toLocaleString('en-IN', { style:'decimal', maximumFractionDigits:0 }); } catch(e){ return Math.round(n); }
+  }
+
+  function computeTotals() {
+    const totalsByCategory = {};
+    let total = 0;
+    for (const e of entries) {
+      const cat = e.category || 'Other';
+      totalsByCategory[cat] = (totalsByCategory[cat] || 0) + Number(e.amount || 0);
+      total += Number(e.amount || 0);
+    }
+    return { totalsByCategory, total };
+  }
+
+  function updateCharts() {
+    const { totalsByCategory, total } = computeTotals();
+    totalSpentEl.textContent = '₹' + formatINR(total);
+
+    // Pie data
+    const labels = Object.keys(totalsByCategory);
+    const data = labels.map(l => totalsByCategory[l]);
+
+    if (pieChart) {
+      pieChart.data.labels = labels;
+      pieChart.data.datasets[0].data = data;
+      pieChart.update();
+    } else {
+      pieChart = new Chart(pieCtx, {
+        type: 'pie',
+        data: {
+          labels,
+          datasets: [{ data }]
+        },
+        options: { plugins: { legend: { position: 'bottom' } } }
+      });
+    }
+
+    // Line: group by date (sorted)
+    const byDate = {};
+    for (const e of entries) {
+      const d = (e.date || '').split('T')[0] || new Date().toISOString().slice(0,10);
+      byDate[d] = (byDate[d] || 0) + Number(e.amount || 0);
+    }
+    const dates = Object.keys(byDate).sort();
+    const lineLabels = dates;
+    const lineData = dates.map(d => byDate[d]);
+
+    if (lineChart) {
+      lineChart.data.labels = lineLabels;
+      lineChart.data.datasets[0].data = lineData;
+      lineChart.update();
+    } else {
+      lineChart = new Chart(lineCtx, {
+        type: 'line',
+        data: {
+          labels: lineLabels,
+          datasets: [{
+            label: 'Daily spending',
+            data: lineData,
+            fill: false,
+            tension: 0.25
+          }]
+        },
+        options: { plugins:{ legend:{ display:false } } }
+      });
+    }
+
+    // category list (small legend)
+    const parts = labels.map(l => `<div class="flex justify-between"><span>${l}</span><span>₹${formatINR(totalsByCategory[l])}</span></div>`);
+    categoryList.innerHTML = parts.join('');
+
+    // recent entries table
+    recentTbody.innerHTML = '';
+    const recent = [...entries].slice(-50).reverse();
+    for (const e of recent) {
+      const tr = document.createElement('tr');
+      tr.className = 'border-t';
+      tr.innerHTML = `<td class="py-1">${e.date}</td><td class="py-1">${e.category}</td><td class="py-1">₹${formatINR(e.amount)}</td>`;
+      recentTbody.appendChild(tr);
+    }
+
+    // tip
+    updateTipAndBudgetWarning();
+  }
+
+  function updateTipAndBudgetWarning() {
+    const { totalsByCategory, total } = computeTotals();
+    const food = totalsByCategory['Food'] || 0;
+    let tip = '';
+    if (total === 0) tip = 'No spending yet — add expenses to see insights.';
+    else {
+      const pct = Math.round((food / total) * 100);
+      if (pct >= 40) tip = `You spent ${pct}% on Food. Try reducing food spend by 10% to save ₹${Math.round(food * 0.1)}.`;
+      else if (pct >= 25) tip = `Food is ${pct}% of expenses — keep an eye on it.`;
+      else tip = 'Spending looks fairly balanced across categories.';
+    }
+    tipText.textContent = tip;
+
+    // budget warnings
+    if (!budget || budget === '') {
+      budgetWarn.innerHTML = '';
+      return;
+    }
+    const usedPct = Math.round((total / Number(budget || 1)) * 100);
+    if (usedPct >= 100) budgetWarn.innerHTML = `<div class="mt-2 p-2 rounded text-sm bg-red-100 text-red-700">Budget exceeded! You used ${usedPct}% (₹${formatINR(total)}) of ₹${formatINR(budget)}.</div>`;
+    else if (usedPct >= 90) budgetWarn.innerHTML = `<div class="mt-2 p-2 rounded text-sm bg-yellow-100 text-yellow-700">Almost there — ${usedPct}% of budget used.</div>`;
+    else if (usedPct >= 70) budgetWarn.innerHTML = `<div class="mt-2 p-2 rounded text-sm bg-blue-100 text-blue-700">Used ${usedPct}% of budget. Keep going.</div>`;
+    else budgetWarn.innerHTML = '';
+  }
+
+  // ---------- Events ----------
+  addBtn.addEventListener('click', () => {
+    const date = dateInput.value || (new Date().toISOString().slice(0,10));
+    const amount = parseFloat(amountInput.value || '0') || 0;
+    const category = categorySelect.value || 'Other';
+    if (!amount || amount <= 0) {
+      alert('Enter a valid amount');
+      return;
+    }
+    entries.push({ date, amount, category });
+    saveEntries(entries);
+    amountInput.value = '';
+    dateInput.value = '';
+    renderAll();
+  });
+
+  importBtn.addEventListener('click', () => {
+    const text = csvArea.value.trim();
+    if (!text) { alert('Paste CSV content into the textarea'); return; }
+    const parsed = parseSimpleCSV(text);
+    if (parsed.length === 0) { alert('No rows parsed from CSV'); return; }
+    entries = entries.concat(parsed);
+    saveEntries(entries);
+    csvArea.value = '';
+    renderAll();
+  });
+
+  resetBtn.addEventListener('click', () => {
+    if (!confirm('Clear all saved entries and budget?')) return;
+    entries = [];
+    budget = '';
+    saveEntries(entries);
+    saveBudget('');
+    budgetInput.value = '';
+    renderAll();
+  });
+
+  budgetInput.addEventListener('change', () => {
+    const v = budgetInput.value;
+    if (v === '' || isNaN(Number(v))) { budget = ''; saveBudget(''); renderAll(); return; }
+    budget = Number(v);
+    saveBudget(budget);
+    renderAll();
+  });
+
+  // load initial UI values
+  function initUI() {
+    if (budget) budgetInput.value = budget;
+    // set date input default to today
+    dateInput.value = new Date().toISOString().slice(0,10);
+  }
+
+  function renderAll() {
+    updateCharts();
+  }
+
+  // initialize charts with current data
+  initUI();
+  // create empty charts first to avoid race issues
+  pieChart = new Chart(pieCtx, { type:'pie', data:{ labels:[], datasets:[{ data:[] }]}, options:{ plugins:{legend:{position:'bottom'}} } });
+  lineChart = new Chart(lineCtx, { type:'line', data:{ labels:[], datasets:[{ label:'Daily spending', data:[], fill:false, tension:0.25 }]}, options:{ plugins:{ legend:{ display:false } } } });
+
+  renderAll();
+
+  // optional: helper to bulk-add sample data (uncomment to test)
+  // entries = entries.concat([{date:'2025-09-01',amount:250,category:'Food'},{date:'2025-09-02',amount:120,category:'Travel'},{date:'2025-09-02',amount:350,category:'Shopping'}]); saveEntries(entries); renderAll();
+</script>
+</body>
+</html>
